@@ -1,0 +1,302 @@
+/*import the drug table*/
+libname med xlsx "/userdata08/room373/data_source/user_data/HK_medication.xlsx";
+
+proc sort data=b.both_SD  out=both_SD_s;
+by INDI_DSCM_NO index_date;
+run;
+proc sort data=both_SD_s nodupkey out=both_SD_u;
+by INDI_DSCM_NO;
+run;
+/*N =134,000*/
+/*create the history data of both_SD_u*/
+%macro med(start, end);
+%Do mon =&start %TO &end;
+%IF %substr(&mon, 5,2) =13 %then %let mon = %eval (%substr(&mon,1,4) +1)01;
+data B_&mon;
+	set raw.t20_&mon;
+	format fu_date mmddyy10.;
+	fu_date = input(MDCARE_STRT_DT, yymmdd8.);
+    keep CMN_KEY INDI_DSCM_NO fu_date MDCARE_STRT_DT SICK_SYM1 SICK_SYM2 SICK_SYM3 SICK_SYM4 SICK_SYM5 MCARE_SUBJ_CD
+	  VSHSP_DD_CNT VSHSP_DD_CNT MDCARE_DD_CNT FORM_CD MDCARE_SYM FST_HSPTZ_DT;
+run;
+proc sql;
+	create table A_&mon as
+	select a.INDI_DSCM_NO, a.index_date_SMI, index_date_DM, a.SMI, a.index_date, b.* 
+	from both_SD_u as a
+	inner join B_&mon as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	where year(b.fu_date) <= 2010;
+quit;
+%end;
+%mend med;
+%med(200201,201012);
+data b.t20_0210;
+		set A_200201-A_200212
+		A_200301-A_200312
+		A_200401-A_200412
+		A_200501-A_200512
+		A_200601-A_200612
+	  	A_200701-A_200712
+		A_200801-A_200812
+	  	A_200901-A_200912
+		A_201001-A_201012;
+run;
+/*N =24,983,278  */
+/*Extract medication information*/
+data t20_0210;
+	set b.t20_0210;
+	if index_date <= fu_date;
+run;
+/*N =21,096,490  */
+
+/*create the follow-up t20, t30_60 table of sip*/
+/*merger with drug table*/
+%macro med_3060(start, end);
+%Do mon =&start %TO &end;
+%IF %substr(&mon, 5,2) =13 %then %let mon = %eval (%substr(&mon,1,4) +1)01;
+/*create table T30*/
+proc sql;
+	create table t_30_&mon as
+	select a.*, b.CLSF_PTTN_CD, b.MCARE_DIV_CD_ADJ, b.DD1_MQTY_FREQ, b.TOT_MCNT, b.TIME1_MDCT_CPCT 
+	from t20_0210 as a
+	inner join raw.t30_&mon as b
+	on a.CMN_KEY = b.CMN_KEY;
+quit;
+proc sql;
+	create table t60_&mon as
+	select a.*, b.CLSF_PTTN_CD, b.MCARE_DIV_CD_ADJ, b.MPRSC_DD1_TUYAK_CPCT, b.TOT_MCNT, b.MPRSC_TIME1_TUYAK_CPCT 
+	from t20_0210 as a
+	inner join raw.t60_&mon as b
+	on a.CMN_KEY = b.CMN_KEY;
+quit;
+/*combine 2 table*/
+data t_3060_&mon;
+	set t_30_&mon t60_&mon;
+run;
+%end;
+%mend med_3060;
+%med_3060 (200201,201012);
+data b.t3060_0210;
+		set T_3060_200201-T_3060_200212
+		T_3060_200301-T_3060_200312
+		T_3060_200401-T_3060_200412
+		T_3060_200501-T_3060_200512
+		T_3060_200601-T_3060_200612
+	  	T_3060_200701-T_3060_200712
+		T_3060_200801-T_3060_200812
+	  	T_3060_200901-T_3060_200912
+		T_3060_201001-T_3060_201012;
+run;
+/*N = 139,352,483  */
+
+/**************************************************************************************************************************************/
+/*I. Psychiatric medication*/
+/*create the follow-up medication prescription data of F and where index_date_SMI <= fu_date*/
+data b.F;
+set b.t3060_0210;
+/*initial F class*/
+F = 'No';
+if index_date_SMI <= fu_date;
+array symtoms[5] SICK_SYM1-SICK_SYM5;
+Do i=1 to 5;
+if (upcase(substr(symtoms[i],1,1)) in ('F')) then F = 'F';
+end;
+if F = 'F' then output;
+drop i F;
+run;
+/*N =48,265,659  */
+
+/*Step 3. merger with medbook table*/
+data med_code; 
+	set med.'psy med'n;
+	keep  ּ    ڵ  Name Type;
+run;
+
+proc sql;
+create table b.med_fu as
+	select a.INDI_DSCM_NO, a.MDCARE_STRT_DT, a.CMN_KEY,  a.TOT_MCNT, a.fu_date, a.index_date,	b.*
+	from b.F as a
+	inner join med_code as b
+	on substr(a.MCARE_DIV_CD_ADJ,1,6) = substr( ּ    ڵ ,1,6);
+quit;
+/*N=18,449,216*/
+/*Step 4. Check whether have monthly payment or not:
+	IF monthly payment then different fu_date or MDCARE_STRT_DT but same CMN_KEY in INDI_DSCM_NO*/
+*remove the duplicate of fu_date;
+proc sort data= b.med_fu out= ck1;
+	by INDI_DSCM_NO fu_date;
+run;
+proc sort data=ck1 nodupkey out= ck1_u ;
+	by INDI_DSCM_NO fu_date;
+run;
+/*N = 4,253,119  */
+*remove the duplicate of CMN_KEY, if have dup CMN_KEY then monthly payment;
+proc sort data= ck1_u out= ck11_s;
+	by INDI_DSCM_NO CMN_KEY;
+run;
+proc sort data=ck11_s nodupkey out=ck11_nodup dupout=ck11_dup;
+	by INDI_DSCM_NO CMN_KEY;
+run;
+/*N ck11_dup =0   --> no monthly payment*/
+
+/*Step 5. Sort the data by decending TOT_MCNT to get the maximum of TOT_MCNT of each type*/
+proc sort data= b.med_fu out= med_u;
+	by INDI_DSCM_NO CMN_KEY fu_date Type descending TOT_MCNT ;
+run;
+proc sort data=med_u nodupkey out=med_nodup;
+	by INDI_DSCM_NO CMN_KEY fu_date Type ;
+run;
+/*N =10,708,637  */
+
+
+/*Step 5. Create the cumulative use of each type during Case 1: cummulative expose from 1Dec2010 to 31Dec2010*/
+/*create the end date of drug use*/
+
+%macro medvar1(var = );
+data &var;
+    set med_nodup;
+      	drop Name ' ּ    ڵ 'n;
+	*Definition 1: from 20101201 - 20101231;
+		if fu_date + TOT_MCNT >=  input("20101201", yymmdd8.);
+  		if Type = "&var" then output &var;
+run;
+/*sort the data by indi_dscm_no and CMN_KEY*/
+ proc sort data= &var out= a_&var;
+     by indi_dscm_no fu_date;
+ run;
+
+ data b_&var;
+      set a_&var;
+			end_date = fu_date + TOT_MCNT;
+			by indi_dscm_no fu_date;   
+		   retain start_date1 end_date1;
+		   hold =0;
+	          	if first.indi_dscm_no then do;
+	         			start_date1 = fu_date;
+	         			end_date1 = min(end_date, input("20101231", yymmdd8.));
+						hold =1;
+	            end;       
+		/*if the last date use at current visit > fu_date in the next visit then 
+			assign the start date = start date of at current visit	*/
+				else if fu_date < end_date1 then do;
+						start_date1 = start_date1 ;
+	         			end_date1 = min(max(end_date,end_date1), input("20101231", yymmdd8.));
+	            end;    
+				else do; 
+					start_date1 = fu_date ;
+	         		end_date1 = min(max(end_date,end_date1), input("20101231", yymmdd8.));
+	            end;
+         	format end_date1 start_date1 end_date yymmdd10.;
+		run;
+proc sort data= b_&var out= c_&var (keep = indi_dscm_no start_date1 end_date1);
+		by indi_dscm_no start_date1 descending end_date1;
+run;
+
+proc sort data=c_&var nodupkey out= d_&var;
+		by indi_dscm_no start_date1;
+run;
+data e1_&var;
+		set d_&var;
+		start_date = max(start_date1, input("20101201", yymmdd8.));
+			dose_use = end_date1-start_date;
+		format start_date yymmdd10.;
+run;
+
+proc sql;
+	create table f1_&var as
+	select a.indi_dscm_no, sum(dose_use) as cu_dose,
+		case when calculated cu_dose >= 30 then 1 else 0 end as cu_&var.
+	from e1_&var as a
+	group by indi_dscm_no;
+quit; 
+
+/*sort the data by indi_dscm_no to full join*/
+proc sort data=f1_&var nodupkey out= case1_&var;
+		by indi_dscm_no;
+run;
+%mend;
+%medvar1(var = AL); %medvar1(var = ATP); %medvar1(var = AD); %medvar1(var = MB); %medvar1(var = TAP); 
+%medvar1(var = Others); %medvar1(var = HP); %medvar1(var = LT); %medvar1(var = CE); %medvar1(var = MB); 
+
+/* Perform a full join */
+data b.cum1_psymed;
+    merge case1_AL case1_ATP case1_AD case1_MB case1_TAP case1_Others case1_HP case1_LT case1_CE case1_MB;
+    by indi_dscm_no;
+run;
+/*N =73451*/
+
+
+%macro medvar2(var = );
+data &var;
+    set med_nodup;
+      	drop Name ' ּ    ڵ 'n;
+	*Definition 2: from 20101001 - 20101231;
+		if fu_date + TOT_MCNT >=  input("20101001", yymmdd8.);
+  		if Type = "&var" then output &var;
+run;
+/*sort the data by indi_dscm_no and CMN_KEY*/
+ proc sort data= &var out= a_&var;
+     by indi_dscm_no fu_date;
+ run;
+
+ data b_&var;
+      set a_&var;
+			end_date = fu_date + TOT_MCNT;
+			by indi_dscm_no fu_date;   
+		   retain start_date1 end_date1;
+		   hold =0;
+	          	if first.indi_dscm_no then do;
+	         			start_date1 = fu_date;
+	         			end_date1 = min(end_date, input("20101231", yymmdd8.));
+						hold =1;
+	            end;       
+		/*if the last date use at current visit > fu_date in the next visit then 
+			assign the start date = start date of at current visit	*/
+				else if fu_date < end_date1 then do;
+						start_date1 = start_date1 ;
+	         			end_date1 = min(max(end_date,end_date1), input("20101231", yymmdd8.));
+	            end;    
+				else do; 
+					start_date1 = fu_date ;
+	         		end_date1 = min(max(end_date,end_date1), input("20101231", yymmdd8.));
+	            end;
+         	format end_date1 start_date1 end_date yymmdd10.;
+		run;
+proc sort data= b_&var out= c_&var (keep = indi_dscm_no start_date1 end_date1);
+		by indi_dscm_no start_date1 descending end_date1;
+run;
+
+proc sort data=c_&var nodupkey out= d_&var;
+		by indi_dscm_no start_date1;
+run;
+
+*Definition 2: from 20101001 - 20101231;
+data e2_&var;
+		set d_&var;
+		start_date = max(start_date1, input("20101001", yymmdd8.));
+			dose_use = end_date1-start_date;
+		format start_date yymmdd10.;
+run;
+
+proc sql;
+	create table f2_&var as
+	select a.indi_dscm_no, sum(dose_use) as cu_dose,
+		case when calculated cu_dose >= 60 then 1 else 0 end as cu_&var.
+	from e2_&var as a
+	group by indi_dscm_no;
+quit; 
+
+/*sort the data by indi_dscm_no to full join*/
+proc sort data=f2_&var nodupkey out= case2_&var;
+		by indi_dscm_no;
+run;
+%mend;
+%medvar2(var = AL); %medvar2(var = ATP); %medvar2(var = AD); %medvar2(var = MB); %medvar2(var = TAP); 
+%medvar2(var = Others); %medvar2(var = HP); %medvar2(var = LT); %medvar2(var = CE); %medvar2(var = MB); 
+
+/* Perform a full join */
+data b.cum2_psymed;
+    merge case2_AL case2_ATP case2_AD case2_MB case2_TAP case2_Others case2_HP case2_LT case2_CE case2_MB;
+    by indi_dscm_no;
+run;
+/*N =80256  */
