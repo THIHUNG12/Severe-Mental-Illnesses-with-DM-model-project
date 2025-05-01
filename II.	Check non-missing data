@@ -1,0 +1,145 @@
+Necessary health checkup variable: exmd_bz_yyyy rn_indi G1E_HGHT G1E_WGHT G1E_BMI G1E_EKG_RST G1E_URN_PROT G1E_VA_LT G1E_VA_RT G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR
+SAS Codes: 
+1 : Merge all health checkup data
+
+/*2002 - 2008*/
+%macro G1EQ(year);
+data health1_&year;
+set raw.G1EQ_&year (drop=exmd_bz_yyyy);
+EXMD_BZ_YYYY = put(&year, 4.);
+keep exmd_bz_yyyy INDI_DSCM_NO G1E_HGHT G1E_WGHT G1E_BMI Q_SMK_YN G1E_BP_SYS G1E_BP_DIA G1E_URN_PROT G1E_VA_LT G1E_VA_RT G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+run;
+%mend;
+%G1EQ(2002);%G1EQ(2003);%G1EQ(2004);%G1EQ(2005);%G1EQ(2006);%G1EQ(2007);%G1EQ(2008);
+
+/*merge the health1*/
+data HEALTH1;
+		set HEALTH1_2002-HEALTH1_2008;
+run;
+
+/*2009 - 2011*/
+%macro G1EQ(year);
+data health2_&year;
+set raw.G1EQ_&year (drop=exmd_bz_yyyy);
+EXMD_BZ_YYYY = put(&year, 4.);
+keep EXMD_BZ_YYYY INDI_DSCM_NO G1E_HGHT G1E_WGHT G1E_BMI Q_SMK_YN G1E_BP_SYS G1E_BP_DIA G1E_URN_PROT G1E_VA_LT G1E_VA_RT G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+run;
+%mend;
+%G1EQ(2009);%G1EQ(2010);%G1EQ(2011);
+/*merge the health2*/
+data HEALTH2;
+	set health2_2009-health2_2011;
+run;
+
+/*Merge health1 and health 2*/
+data b.ckup;
+set HEALTH1 HEALTH2;
+run;
+
+2: Check each non_missing variable
+/*Step 1: Get closest data of health checkup variables of 2 year before the baseline*/
+%macro create_closest_table;
+	%let vars = Q_SMK_YN G1E_HGHT G1E_WGHT G1E_BMI G1E_BP_DIA G1E_URN_PROT
+					G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+
+	%let n= %sysfunc(countw(&vars));
+
+	*Loop through each variable to create separate datasets;
+	%do i=1 %to &n; 
+	 %let var = %scan(&vars, &i);
+	 proc sql;
+	 create table &var._cl as
+		 select 
+a.INDI_DSCM_NO,a.baseline, year(a.baseline) as base_year, b.EXMD_BZ_YYYY, b.&var,abs(calculated base_year - input(EXMD_BZ_YYYY, 8.)) as diff
+		 from b.demo_11 as a
+		 inner join b.ckup as b
+		 on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+		 	where calculated base_year-2 <= input(EXMD_BZ_YYYY, 8.) <calculated base_year
+		 		and b.&var is not missing;
+	quit;
+	%end;
+%mend create_closest_table;
+%create_closest_table;
+
+/*Step 2: Get the closest data year for each id*/
+%macro get_closest_year;
+	%let vars = Q_SMK_YN G1E_HGHT G1E_WGHT G1E_BMI G1E_BP_DIA G1E_URN_PROT G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+
+	%let n= %sysfunc(countw(&vars));
+	*Loop through each variable to create separate datasets;
+	%do i=1 %to &n;
+	 %let var = %scan(&vars, &i);
+
+	 *Get closest data of each id;
+	 proc sql;
+	 create table &var._cl_final as
+		 select 
+			 a.INDI_DSCM_NO, a.baseline, a.base_year, a.EXMD_BZ_YYYY, a.&var, a.diff
+		 from &var._cl as a
+				where a.diff = (select min(b.diff)
+							from &var._cl as b
+							where a.INDI_DSCM_NO = b.INDI_DSCM_NO);
+	quit;
+
+		/*Sort the data by id and ascending of diff*/
+		proc sort data=&var._cl_final out=&var._cl_sort;
+			by INDI_DSCM_NO diff;
+		run;
+
+		/*Sort the data*/
+		proc sort data=&var._cl_sort nodupkey out=&var._cl_use;
+			by INDI_DSCM_NO ;
+		run;
+	%end;
+%mend get_closest_year;
+%get_closest_year;
+
+
+/*Step 3: Merge all the datasets to create the final_data include all necessary health check up variables;*/
+%macro merge_datasets;
+	%let vars = Q_SMK_YN G1E_HGHT G1E_WGHT G1E_BMI G1E_BP_DIA G1E_URN_PROT G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+
+	%let n= %sysfunc(countw(&vars));
+	*Loop through each variable to create the merge condition;
+	%let condition= ;
+	%do i=1 %to &n;
+		%let condition= &condition in&i or ;
+	%end;
+
+*Remove the last "or" from the condition;
+	%let condition= %sysfunc(countw(&condition, 1, %length(&condition)-12));
+	 %let var = %scan(&vars, &i);
+*Merge all created dataset by id;
+	 data merged_data;
+	 	merge 
+		 	%do i=1 %to &n;
+				%let var = %scan(&vars, &i);
+				&var._cl_use (in = in&i)
+			%end;
+			;
+		by INDI_DSCM_NO;
+*Keep only rows where id is present in all datasets;
+		if &condition then output;
+run;
+%mend merge_datasets;
+%merge_datasets;
+/*N =33,055  */
+/*Step 4: remove missing values*/
+
+data final_pat;
+	set merged_data;
+	*Check for missing values across all variables;
+if nmiss(of Q_SMK_YN G1E_HGHT G1E_WGHT G1E_BMI G1E_BP_DIA G1E_URN_PROT G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR) = 0;
+run;
+/*N =17, 564  */
+proc sql;
+	create table b.final_pat as
+select a.INDI_DSCM_NO, a.index_date_SMI, a.SMI,a.index_date_DM, b.*
+		from b.demo_11 as a
+		inner join final_pat as b
+			on a.INDI_DSCM_NO = b.INDI_DSCM_NO;
+	quit;
+/*	N =17564    */
+proc freq data=b.final_pat;
+	tables SMI;
+run;
