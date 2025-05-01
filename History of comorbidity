@@ -1,0 +1,150 @@
+CHECK THE DIAGNOSIS CODES OF AF, ESRD CODES (ICD-10)
+data ckAF;
+	set b.t20_0210;
+	if upcase(substr(SICK_SYM1,1,3)) = "I48" then
+ AF = input(substr(SICK_SYM1,2,5), 5.);
+else if upcase(substr(SICK_SYM2,1,3)) = "I48" then AF = input(substr(SICK_SYM2,2,5), 5.);
+else if upcase(substr(SICK_SYM3,1,3)) = "I48" then AF = input(substr(SICK_SYM3,2,5), 5.);
+else if upcase(substr(SICK_SYM4,1,3)) = "I48" then AF = input(substr(SICK_SYM4,2,5), 5.);
+else if upcase(substr(SICK_SYM5,1,3)) = "I48" then AF = input(substr(SICK_SYM5,2,5), 5.);
+	else AF = 0;
+
+	if AF ^= 0;
+	keep indi_dscm_no AF;
+run;
+/*N=84666°³ÀÇ*/
+proc sort data=ckAF out=ckAF_s;
+by indi_dscm_no descending AF;
+run;
+proc freq data=ckAF_s;
+tables AF;
+run; 
+proc sort data=ckAF_s nodupkey out=ckAF_u;
+by indi_dscm_no ;
+run;
+proc freq data=ckAF_u;
+tables AF;
+run; 
+/*N=9650°³*/
+proc sql;
+	create table ck_final_AF as
+	select a.indi_dscm_no, a.SMI, 
+		case when a.indi_dscm_no = b.indi_dscm_no then b.AF
+				else 0 end as ht_AF
+	from b.final_pat as a
+	left join ckAF_u as b
+	on a.indi_dscm_no = b.indi_dscm_no;
+quit;
+
+proc freq data=ck_final_AF;
+tables ht_AF;
+run; 
+
+data ckESRD;
+	set b.outcome_1120;
+	if upcase(substr(SICK_SYM1,1,4)) = "Z911" then ESRD = input(substr(SICK_SYM1,2,5), 5.);
+		else if upcase(substr(SICK_SYM2,1,4)) = "Z911" then ESRD = input(substr(SICK_SYM2,2,5), 5.);
+		else if upcase(substr(SICK_SYM3,1,4)) = "Z911" then ESRD = input(substr(SICK_SYM3,2,5), 5.);
+		else if upcase(substr(SICK_SYM4,1,4)) = "Z911" then ESRD = input(substr(SICK_SYM4,2,5), 5.);
+		else if upcase(substr(SICK_SYM5,1,4)) = "Z911" then ESRD = input(substr(SICK_SYM5,2,5), 5.);
+	else ESRD = 0;
+	if ESRD ^= 0;
+	keep indi_dscm_no ESRD;
+run;
+/*N =42*/
+proc sort data=ckESRD out=ckESRD_s;
+by indi_dscm_no descending ESRD;
+run;
+proc freq data=ckESRD;
+tables ESRD;
+run; 
+proc sort data=ckESRD_s nodupkey out=ckESRD_u;
+by indi_dscm_no ;
+run;
+proc freq data=ckESRD_u;
+tables ESRD;
+run; 
+/*N=2 (Z9111)*/
+
+%macro med(start, end);
+%Do mon =&start %TO &end;
+%IF %substr(&mon, 5,2) =13 %then %let mon = %eval (%substr(&mon,1,4) +1)01;
+data B_&mon;
+	set raw.t20_&mon;
+	format fu_date mmddyy10.;
+	fu_date = input(MDCARE_STRT_DT, yymmdd8.);
+    keep CMN_KEY INDI_DSCM_NO fu_date MDCARE_STRT_DT SICK_SYM1 SICK_SYM2 SICK_SYM3 SICK_SYM4 SICK_SYM5 MCARE_SUBJ_CD
+	  VSHSP_DD_CNT VSHSP_DD_CNT MDCARE_DD_CNT FORM_CD MDCARE_SYM FST_HSPTZ_DT;
+run;
+proc sql;
+	create table A_&mon as
+	select a.INDI_DSCM_NO, a.index_date_SMI, index_date_DM, a.SMI, a.index_date, b.* 
+	from both_SD_u as a
+	inner join B_&mon as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	where year(b.fu_date) <= 2010;
+quit;
+%end;
+%mend med;
+%med(200201,201012);
+
+data b.t20_0210;
+		set A_200201-A_200212
+		A_200301-A_200312
+		A_200401-A_200412
+		A_200501-A_200512
+		A_200601-A_200612
+	  	A_200701-A_200712
+		A_200801-A_200812
+	  	A_200901-A_200912
+		A_201001-A_201012;
+run;
+/*N =24,983,278°³*/
+
+%macro hisdt;
+%let hisdt = anyCVD: I20 I21 I22 I23 I24 I25 I50 I6 Z955 Z951 Z958 G451 G452 G454 G458 G459 |
+						SUD: F1 |
+						AF: I48 |
+						ReP: H360 ;
+
+/* Loop through each diagnosis category */
+%let n = %sysfunc(countw(&hisdt, |));
+%do i = 1 %to &n;
+    %let cat_codes = %scan(&hisdt, &i, |);
+    %let var = %scan(&cat_codes, 1, :);
+    %let codes = %scan(&cat_codes, 2, :);
+
+    /* Create the dataset for each variable */
+    data hisdt_&var;
+        set b.t20_0210;
+        &var = 0;
+
+        /* Create an array of symptoms */
+        array symptoms[5] SICK_SYM1-SICK_SYM5;
+
+        /* Loop through symptoms array */
+        do i = 1 to dim(symptoms);
+            /* Loop through each diagnosis code */
+            %do j = 1 %to %sysfunc(countw(&codes, %str( )));
+                %let code = %scan(&codes, &j, %str( ));
+                if upcase(symptoms[i]) = "&code" then &var = 1;
+            %end;
+        end;
+        drop i;
+    run;
+/*	Sort the data*/
+	proc sort data= hisdt_&var out=sort_&var;
+		by INDI_DSCM_NO;
+	run;
+%end;
+%mend hisdt;
+%hisdt;
+/* Perform a full join */
+data b.hisdata;
+    merge SORT_ANYCVD SORT_SUD SORT_AF SORT_REP;
+    by INDI_DSCM_NO;
+run;
+/*N=24,983,278°³*/
+proc sort data=b.hisdata nodupkey out=ck;
+by indi_dscm_no;
+run;
