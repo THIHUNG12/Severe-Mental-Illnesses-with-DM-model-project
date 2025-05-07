@@ -1,0 +1,182 @@
+/*. ERROR DATA 
+1. Check at index_date_SMI if the billing was made every 30 days (VSHSP_DD_CNT or MDCARE_DD_CNT) for hospitalization FORM_CD in ('02','10', '07')and not split billing CMN_KEY on one day then error --> remove
+if still also psychiatric department diagnosis then select the first CMN_KEY
+1.1. Create the both_SD_u with the first diagnosis of SMI (index_date_SMI)
+1.2. Merge the both_SD_u with b.SMI to get the follow-up data of SMI
+1.3. Create the n_id by INDI_DSCM_NO and fu_date which count how many time each patient visit to the hospital in the one day 
+1.4. Remove the error
+1.5. Check what if at index_date_SMI the patient have more than 2 time visit to the hospital with different diagnosis of psychiatric
+	select the diagnosis with the psychiatric department diagnosis MCARE_SUBJ_CD = "03" 
+	if still also psychiatric department diagnosis then select the first CMN_KEY
+2. Check at follow-up until baseline if the billing was made every 30 days for hospitalization (VSHSP_DD_CNT or MDCARE_DD_CNT) 
+and not split billing CMN_KEY on one day then error --> remove the error, same method (1.1 --> 1.4) */
+
+/*1.1. Create the both_SD_u with the first diagnosis of SMI (index_date_SMI)*/
+proc sort data=b.both_SD  out=both_SD_s;
+by INDI_DSCM_NO index_date_SMI;
+run;
+proc sort data=both_SD_s nodupkey out=both_SD_u;
+by INDI_DSCM_NO;
+run;
+/*N =134,000*/
+/*1.2. Merge the both_SD_u with b.SMI to get the follow-up data of SMI*/
+proc sql;
+create table b.base as
+	select a.INDI_DSCM_NO, a.index_date_SMI, b.*, b.index_date_SMI as fu_date,
+	case when a.index_date_SMI = b.index_date_SMI then 1 else 0 end as index_same
+					
+	from both_SD_u  a
+	left join  b.SMI b 
+		on a.INDI_DSCM_NO=b.INDI_DSCM_NO
+		where a.index_date_SMI <= b.index_date_SMI
+	order by INDI_DSCM_NO, fu_date;
+quit;
+/*N =3,520,689*/
+/*1.3. create the n_id by INDI_DSCM_NO and fu_date which count how many time each patient visit to the hospital in the one day*/
+data base (drop=SICK_SYM1 SICK_SYM2 SICK_SYM3 SICK_SYM4 SICK_SYM5 );
+set b.base;
+by INDI_DSCM_NO fu_date;
+if first.fu_date=1 then n_id=0;
+n_id+1;
+run;
+/*N =3,520,689  */
+
+/*1.4. Remove the error*/
+proc sql;
+	create table error as
+	select *, max(n_id) as n_max, mean(VSHSP_DD_CNT) as h_cnt, mean(MDCARE_DD_CNT) as y_cnt
+	from base
+	where index_same=1 and FORM_CD in ('02','07','10') and (VSHSP_DD_CNT^=0 or MDCARE_DD_CNT^=0)
+	group by INDI_DSCM_NO
+	having calculated n_max>3 and (calculated h_cnt>20 or calculated y_cnt>20);
+quit; /*0*/
+/*proc sort data=error out=error_u nodupkey; by INDI_DSCM_NO; run; 0  */
+
+/*1.5. Check what if at index_date_SMI the patient have more than 2 time visit to the hospital with different diagnosis of psychiatric*/
+/*	select the diagnosis with the psychiatric department diagnosis FORM_CD in ('02','10', '07')*/
+/*	if still also psychiatric department diagnosis then select the first CMN_KEY*/
+
+/*a. create the table of patient with more than 2 diagnosis of index_date_SMI  */
+proc sql;
+	create table base1 as
+	select *, max(n_id) as n_max
+	from base
+	where index_same=1
+	group by INDI_DSCM_NO
+	having calculated n_max>1;
+quit;
+/*proc sort data=base1 out=ck nodupkey; by INDI_DSCM_NO; run; */
+/*3,216  , 1,584patients*/
+
+/*b.1 check if there are same Diagnosis*/
+proc sql;
+	create table f_same_dt as
+	select *, count(INDI_DSCM_NO) as f_same
+	from base1
+	group by INDI_DSCM_NO, fu_date, SMI
+	having calculated f_same>= n_max; 
+quit; /*2,316  */
+proc sort data=f_same_dt out=f_same_u nodupkey; by indi_dscm_no;run;/*1143 patients*/
+
+/*b.2 check if there are not same Diagnosis*/
+proc sql;
+	create table prob as
+	select *, count(INDI_DSCM_NO) as f_same
+	from base1
+	group by  INDI_DSCM_NO, fu_date, SMI
+	having calculated f_same<n_max; 
+quit;
+/*900  */
+proc sort data=prob out=prob_u nodupkey; by indi_dscm_no;run;/*441 patients*/
+
+/*b.3. Select if psychiatric diagnosis: 
+		*if VSHSP_DD_CNT = 0 at baseline then patient with have 2 time visit of different department in one hospital (both clinic)
+			select that case
+		- select the case of diagnosis of psychiatric department only in that case MCARE_SUBJ_CD='03'
+		- select the first cmn_key of psychiatric department
+       * if not both clinic then select the first cmn_key*/
+
+*if VSHSP_DD_CNT = 0 at baseline then patient with have 2 time visit of different department in one hospital (both clinic);
+proc sql;
+	create table prob_dd0 as
+	select *, min(VSHSP_DD_CNT) as both_clinic, case when MCARE_SUBJ_CD='03' then 1 else 0 end as psy
+	from prob
+	group by INDI_DSCM_NO, fu_date
+	having calculated both_clinic=0;
+quit; /*22  */
+proc freq data=prob_dd0; table MCARE_SUBJ_CD; run;
+proc sort data=prob_dd0 out=prob_dd0_s;
+by indi_dscm_no descending psy cmn_key;
+run;
+proc sort data=prob_dd0_s out=noprob nodupkey;
+by indi_dscm_no;
+run; 
+/*N =8 patients*/
+/*proc sql;
+	create table ck1 as
+	select a.INDI_DSCM_NO, b.*
+	from noprob a
+	left join b.base b on a.INDI_DSCM_NO=b.INDI_DSCM_NO;
+quit; 112  , 8 patients*/
+
+* if not both clinic then select the first cmn_key;
+proc sql;
+	create table base_final as
+	select a.*
+	from b.base a
+	left join noprob b on a.INDI_DSCM_NO=b.INDI_DSCM_NO 
+	where a.INDI_DSCM_NO^=b.INDI_DSCM_NO
+	order by a.INDI_DSCM_NO, a.fu_date, a.cmn_key;
+quit; 
+/*3,520,577*/
+/*3,520,689+ 112 = 3,520,577*/
+
+data index_final_s (drop= n_id n_max f_same both_clinic psy); 
+set base_final noprob;
+run; /*3,520,577 + 8 = 3,520,585  */
+
+/*select the first cmn_key*/
+/*proc sort data=index_final_s out=b.index_final_s;*/
+/*by indi_dscm_no fu_date cmn_key; run;*/
+/*proc sort data=b.index_final_s out=b.index_final_u nodupkey;*/
+/*by indi_dscm_no; run;*/
+/*N =134,000  */
+
+/**************************************************************************************************************************************/
+/*2. Check at follow-up until baseline if the billing was made every 30 days for hospitalization (VSHSP_DD_CNT or MDCARE_DD_CNT) */
+/*and not split billing CMN_KEY on one day then error --> remove the error, same method (1.1 --> 1.4) */
+/*2.1. select the follow-up data*/
+data base2 (drop=SICK_SYM1 SICK_SYM2 SICK_SYM3 SICK_SYM4 SICK_SYM5);
+set b.base;
+where index_same=0;
+by INDI_DSCM_NO fu_date;
+if first.fu_date=1 then n_id=0;
+n_id+1;
+run;
+/*3,520,689 --> 3,385,057  */
+proc freq data=base2; table n_id; run;
+
+/*2.2./*1.4. Remove the error*/
+proc sql;
+	create table error_fu as
+	select *, max(n_id) as n_max, mean(VSHSP_DD_CNT) as h_cnt, mean(MDCARE_DD_CNT) as y_cnt
+	from base2
+	where FORM_CD in ('02','07','10') and (VSHSP_DD_CNT^=0 or MDCARE_DD_CNT^=0)
+	group by INDI_DSCM_NO, fu_date
+	having calculated n_max>3 and (calculated h_cnt>20 or calculated y_cnt>20);
+quit; /*2*/ 
+
+/*create the table base_final_s and base_final_u*/
+proc sql;
+	create table b.base_final_s as
+	select a.*
+	from index_final_s a
+	left join error_fu b on a.INDI_DSCM_NO=b.INDI_DSCM_NO 
+	where a.INDI_DSCM_NO^=b.INDI_DSCM_NO
+	order by a.INDI_DSCM_NO, a.fu_date, a.cmn_key;
+quit; 
+/*N =3520471*/
+proc sort data=b.base_final_s out=b.base_final_u nodupkey;
+by indi_dscm_no; 
+run;
+/*N =133,999  */
