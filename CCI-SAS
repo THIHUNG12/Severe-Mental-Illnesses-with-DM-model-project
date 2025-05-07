@@ -1,0 +1,91 @@
+/*Merge data from 2011-2020*/
+%macro CCIdata(start, end);
+%Do mon =&start %TO &end;
+%IF %substr(&mon, 5,2) =13 %then %let mon = %eval (%substr(&mon,1,4) +1)01;
+data B_&mon;
+	set raw.t20_&mon;
+	format CCI_date mmddyy10. ;
+	CCI_date = input(MDCARE_STRT_DT, yymmdd8.);
+    keep CMN_KEY INDI_DSCM_NO CCI_date SICK_SYM1 SICK_SYM2 SICK_SYM3 SICK_SYM4 SICK_SYM5 ;
+run;
+
+/*merge with both_SD_u*/
+proc sql;
+	create table CCI_&mon as
+	select a.INDI_DSCM_NO, b.* 
+	from both_SD_u as a
+	inner join B_&mon as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO;
+quit;
+%end;
+%mend CCIdata;
+%CCIdata(201001,201012);
+data b.CCI_2010;
+		set CCI_201001-CCI_201012;
+run;
+/*N =3,939,938°³*/
+proc sort data=b.CCI_2010 nodupkey out=ck;
+by indi_dscm_no;
+run;
+/*N =115748°³*/
+
+%macro CCI(start, end);
+  /* Define all diagnosis codes in one macro variable */
+  %let comorbidities = PVD: I71 I790 I739 R02 Z958 Z959 |
+                       Dem: F00 F01 F02 F051 |
+                       CPD: I278 I279 J4 J60 J61 J62 J63 J64 J65 J66 J67 J684 J701 J703 |
+                       Rheu: M05 M06 M315 M32 M33 M34 M351 M353 M360 |
+                       PUD: K25 K26 K27 K28 |
+                       MLD: K702 K703 K73 K717 K740 K742 K743 K744 K745 K746 |
+                       Hem: G81 G041 G820 G821 G822 |
+                       RD: N03 N04 N05 N25 |
+                       Can: C1 C2 C3 C40 C41 C43 C44 C45 C46 C47 C48 C49 C5 C6 C70 C71 C72 C73 C74 C75 C76 C81 C82 C83 C84 C85 C86 C87 C88 C9 |
+                       SLD: K729 K766 K767 K721 |
+                       MCan: C77 C78 C79 C80 |
+                       HP: I10 I15 |
+                       Dys: E78 ;
+/* Loop through each diagnosis category */
+%let n = %sysfunc(countw(&comorbidities, |));
+%do i = 1 %to &n;
+    %let cat_codes = %scan(&comorbidities, &i, |);
+    %let var = %scan(&cat_codes, 1, :);
+    %let codes = %scan(&cat_codes, 2, :);
+
+    /* Create the dataset for each variable */
+    data outCCI_&var;
+        set b.CCI_2010;
+        &var = 0;
+
+        /* Create an array of symptoms */
+        array symptoms[5] SICK_SYM1-SICK_SYM5;
+
+        /* Loop through symptoms array */
+        do i = 1 to 5;
+            %do j = 1 %to %sysfunc(countw(&codes));
+              %let code = %scan(&codes, &j);
+			  if upcase(substr(symptoms[i], 1, length("&code"))) = "&code" then &var = 1;
+            %end;
+          end;
+        drop i;
+    run;
+/*	Sort the data by decending &var*/
+	proc sort data= outCCI_&var out=CCI_s_&var;
+		by INDI_DSCM_NO descending &var;
+	run;
+/*select the unique CCI with highest value*/
+	proc sort data= CCI_s_&var nodupkey out=CCI_&var;
+		by INDI_DSCM_NO;
+	run;
+%end;
+%mend CCI;
+%CCI;
+
+/* Perform a full join */
+data b.CCIdata;
+    merge CCI_PVD CCI_Dem CCI_CPD CCI_Rheu
+          	CCI_PUD CCI_MLD CCI_Hem CCI_RD
+			CCI_Can CCI_SLD CCI_MCan CCI_HP CCI_Dys;
+    by INDI_DSCM_NO;
+	CCI = sum(of PVD--Dys);
+run;
+/*N =115748°³*/
