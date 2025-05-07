@@ -1,0 +1,231 @@
+/*Step 4 merger with health check to get smoking status: */
+/*Merge health checkup data*/
+/*Smoking: Q_SMK_YN,
+1: I don't smoke
+2: I used to smoke, but I quit
+3: I still smoke
+
+G1E_HGHT: Height, m
+G1E_WGHT: Weight, kg
+G1E_BMI: BMI, kg/m2
+Atrial fibrillation: ???G1E_EKG_RST
+G1E_URN_PROT: Albuminuria
+Retinopathy: G1E_VA_LT, G1E_VA_RT
+Total cholesterol, mmol/L: G1E_TOT_CHOL
+HDL-C, mmol/L: G1E_HDL
+LDL-C, mmol/L: G1E_LDL
+Triglyceride, mmol/L: G1E_TG
+Fasting glucose, mmol/L: G1E_FBS
+Serum creatine, umol/L: G1E_CRTN
+eGFR, mL/min/1.73m2: G1E_GFR*/
+/*2002 - 2008*/
+/*exmd_bz_yyyy rn_indi G1E_HGHT G1E_WGHT G1E_BMI
+							G1E_EKG_RST G1E_URN_PROT G1E_VA_LT G1E_VA_RT G1E_TOT_CHOL
+							G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR*/
+%macro G1EQ(year);
+data health1_&year;
+set raw.G1EQ_&year (drop=exmd_bz_yyyy);
+EXMD_BZ_YYYY = put(&year, 4.);
+keep exmd_bz_yyyy INDI_DSCM_NO G1E_HGHT G1E_WGHT G1E_BMI Q_SMK_YN G1E_BP_SYS G1E_BP_DIA
+							 G1E_URN_PROT G1E_VA_LT G1E_VA_RT G1E_TOT_CHOL
+							G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+run;
+%mend;
+%G1EQ(2002);%G1EQ(2003);%G1EQ(2004);%G1EQ(2005);%G1EQ(2006);%G1EQ(2007);
+%G1EQ(2008);
+
+/*merge the health1*/
+data HEALTH1;
+		set HEALTH1_2002-HEALTH1_2008;
+run;
+
+/*2009 - 2011*/
+%macro G1EQ(year);
+data health2_&year;
+set raw.G1EQ_&year (drop=exmd_bz_yyyy);
+EXMD_BZ_YYYY = put(&year, 4.);
+keep EXMD_BZ_YYYY INDI_DSCM_NO G1E_HGHT G1E_WGHT G1E_BMI Q_SMK_YN G1E_BP_SYS G1E_BP_DIA
+							 G1E_URN_PROT G1E_VA_LT G1E_VA_RT G1E_TOT_CHOL
+							G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+run;
+%mend;
+%G1EQ(2009);%G1EQ(2010);%G1EQ(2011);
+/*merge the health2*/
+data HEALTH2;
+		set health2_2009-health2_2011;
+run;
+
+/*Merge health1 and health 2*/
+
+data b.ckup;
+set HEALTH1 HEALTH2;
+run;
+
+proc sort data=b.ckup nodupkey out=ck;
+	by indi_dscm_no;
+run;
+
+/*proc sort data=Q_SMK_YN_CL nodupkey out=Q_SMK_YN_CL_ck;*/
+/*	by indi_dscm_no;*/
+/*run;*/
+/*37544  , 33893    */
+/*proc sql;*/
+/*	create table ck2 as*/
+/*	select a.INDI_DSCM_NO, year(a.baseline) as base_year, b.EXMD_BZ_YYYY, b.Q_SMK_YN,*/
+/*			 calculated base_year - input(EXMD_BZ_YYYY, 8.) as diff*/
+/*	from both_SD_u a*/
+/*	left join b.ckup b on a.INDI_DSCM_NO=b.INDI_DSCM_NO*/
+/*		where calculated base_year-2 <= input(EXMD_BZ_YYYY, 8.) <calculated base_year*/
+/*		 		and b.Q_SMK_YN is not missing;*/
+/*quit; */
+/*proc sort data=ck2 nodupkey out=ck2_ck;*/
+/*	by indi_dscm_no;*/
+/*run;*/
+/*N= 37,544*/
+
+/*Step 1: Get closest data of health checkup variables*/
+%macro create_closestckup_table;
+	%let vars = Q_SMK_YN G1E_HGHT G1E_WGHT G1E_BMI G1E_BP_DIA G1E_URN_PROT
+					G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+
+	%let n= %sysfunc(countw(&vars));
+
+	*Loop through each variable to create separate datasets;
+	%do i=1 %to &n; 
+	 %let var = %scan(&vars, &i);
+	 proc sql;
+	 create table &var._cl as
+		 select 
+			 a.INDI_DSCM_NO,a.baseline, year(a.baseline) as base_year, b.EXMD_BZ_YYYY, b.&var,
+			 calculated base_year - input(EXMD_BZ_YYYY, 8.) as diff
+		 from both_SD_u as a
+		 inner join b.ckup as b
+		 on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+		 	where calculated base_year-2 <= input(EXMD_BZ_YYYY, 8.) <calculated base_year
+		 		and b.&var is not missing;
+	quit;
+	%end;
+%mend create_closestckup_table;
+%create_closestckup_table;
+
+/*Step 2: Get the closest data year for each id*/
+%macro get_closest_year;
+	%let vars = Q_SMK_YN G1E_HGHT G1E_WGHT G1E_BMI G1E_BP_DIA G1E_URN_PROT
+					G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+
+	%let n= %sysfunc(countw(&vars));
+	*Loop through each variable to create separate datasets;
+	%do i=1 %to &n;
+	 %let var = %scan(&vars, &i);
+
+	 *Get closest data of each id;
+	 proc sql;
+	 create table &var._cl_final as
+		 select 
+			 a.INDI_DSCM_NO, a.baseline, a.base_year, a.EXMD_BZ_YYYY, a.&var, a.diff
+		 from &var._cl as a
+				where a.diff = (select min(b.diff)
+							from &var._cl as b
+							where a.INDI_DSCM_NO = b.INDI_DSCM_NO);
+	quit;
+
+		/*Sort the data by id and ascending of diff*/
+		proc sort data=&var._cl_final out=&var._cl_sort;
+			by INDI_DSCM_NO diff;
+		run;
+
+		/*Sort the data*/
+		proc sort data=&var._cl_sort nodupkey out=&var._cl_use;
+			by INDI_DSCM_NO ;
+		run;
+	%end;
+%mend get_closest_year;
+%get_closest_year;
+
+
+/*Step 3: Merge all the datasets to create the final_data include all necessary health check up variables;*/
+%macro merge_datasets;
+	%let vars = Q_SMK_YN G1E_HGHT G1E_WGHT G1E_BMI G1E_BP_DIA G1E_URN_PROT
+					G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR;
+
+	%let n= %sysfunc(countw(&vars));
+	*Loop through each variable to create the merge condition;
+	%let condition= ;
+	%do i=1 %to &n;
+		%let condition= &condition in&i or ;
+	%end;
+
+*Remove the last "or" from the condition;
+	%let condition= %sysfunc(countw(&condition, 1, %length(&condition)-12));
+	 %let var = %scan(&vars, &i);
+*Merge all created dataset by id;
+	 data merged_data;
+	 	merge 
+		 	%do i=1 %to &n;
+				%let var = %scan(&vars, &i);
+				&var._cl_use (in = in&i)
+			%end;
+			;
+		by INDI_DSCM_NO;
+*Keep only rows where id is present in all datasets;
+		if &condition then output;
+run;
+%mend merge_datasets;
+%merge_datasets;
+/*N =34,039    */
+/*Step 4: merge all the check up data*/
+data b.checkup;
+	set merged_data;
+run;
+/*Step 5: remove missing values*/
+data b.checkup_nmiss;
+	set b.checkup;
+	*Check for missing values across all variables;
+		if nmiss(of Q_SMK_YN G1E_HGHT G1E_WGHT G1E_BMI G1E_BP_DIA G1E_URN_PROT
+					G1E_TOT_CHOL G1E_HDL G1E_LDL G1E_TG G1E_FBS G1E_CRTN G1E_GFR) = 0;
+run;
+/*N =18,209    */
+/*	I. random data*/
+proc sql;
+	create table b.final_pat as
+			select a.INDI_DSCM_NO, a.index_date_SMI, a.SMI,a.index_date_DM, b.*
+		from b.demo_11 as a
+		inner join b.checkup_nmiss as b
+			on a.INDI_DSCM_NO = b.INDI_DSCM_NO;
+quit;
+/*	N =17,539    */
+
+proc freq data=b.final_pat;
+	tables SMI;
+run;
+proc print data= b.final_pat (obs=10); run;
+/*Check death case*/
+proc sql;
+	create table b.dth as
+	select a.*,   input(b.DTH_ASSMD_DT, yymmdd8.) as dth_date format=mmddyy10., 
+		case when b.DTH_ASSMD_DT^ = '' and input('20201231', yymmdd8.)-input(b.DTH_ASSMD_DT, yymmdd8.) >= 0 then 1
+					else 0 end as dth_case,
+		case when calculated dth_case =1 then input(b.DTH_ASSMD_DT, yymmdd8.) - a.baseline
+					else input('20201231', yymmdd8.) -a.baseline end as fu_days
+		from b.final_pat as a 
+		left join raw.tg_dth as b
+		on a.INDI_DSCM_NO = b.INDI_DSCM_NO;
+quit;
+proc freq data=b.dth;
+	tables dth_case;
+run;
+/*	II. strict data*/
+proc sql;
+create table b.strict as
+select a.INDI_DSCM_NO, a.SMI, b.*
+	from b.base_final_u as a 
+	inner join b.dth as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO;
+quit;
+
+proc freq data=b.strict;
+	tables SMI;
+run;
+proc freq data=b.strict;
+	tables dth_case;
+run;
